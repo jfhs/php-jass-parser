@@ -119,6 +119,64 @@ class JASSLexer {
 	}
 }
 
+class JASSWriter {
+
+    private $indent;
+    private $buf;
+    private $parameters;
+    public $indent_str = "\t";
+    public $newline = "\n";
+
+    public function __construct($parameters = array()) {
+        $this->buf = '';
+	    $this->indent = 0;
+        $this->parameters = $parameters;
+    }
+
+    public function indent() {
+        if (!isset($this->parameters['indent']) || $this->parameters['indent']) {
+            $this->indent++;
+        }
+        return $this;
+    }
+
+    public function unindent() {
+        if (!isset($this->parameters['indent']) || $this->parameters['indent']) {
+            $this->indent--;
+        }
+        return $this;
+    }
+
+    public function write($str) {
+        $this->buf .= $str;
+        return $this;
+    }
+
+    public function line($str) {
+        $this->write(str_repeat($this->indent_str, $this->indent).$str);
+        return $this;
+    }
+
+    public function endline() {
+        $this->write($this->newline);
+        return $this;
+    }
+
+    public function block($name) {
+        $this->line($name)->endline()->indent();
+        return $this;
+    }
+
+    public function endblock($endname) {
+        $this->unindent()->line($endname)->endline();
+        return $this;
+    }
+
+    public function getString() {
+        return $this->buf;
+    }
+}
+
 class JASSParser {
 
 	const ID_REGEX = '[a-zA-Z_][a-zA-Z_0-9]*';
@@ -146,6 +204,259 @@ class JASSParser {
 	public function __construct($params = array()) {
 		$this->params = $params;
 	}
+
+    public function save($filename, $parameters = array()) {
+        file_put_contents($filename, $this->write($parameters));
+    }
+
+    public function __toString() {
+	    return $this->write();
+    }
+
+	public function write($parameters = array()) {
+        $writer = new JASSWriter($parameters);
+        $this->write_globals($writer);
+        $this->write_functions($writer);
+        return $writer->getString();
+	}
+
+    public function write_globals(JASSWriter $writer) {
+        $result = '';
+        if (!count($this->globals)) {
+            return $result;
+        }
+        $writer->block('globals');
+        foreach($this->globals as $id=>$data) {
+	        $writer->line('');
+	        $this->write_var_declr($writer, $id, $data);
+            $writer->endline();
+        }
+        $writer->endblock('endglobals');
+    }
+
+    public function write_functions(JASSWriter $writer) {
+        foreach($this->functions as $id=>$data) {
+            $this->write_function($writer, $id, $data);
+        }
+    }
+
+    public function write_function(JASSWriter $writer, $id, $data) {
+        $declr_data = $data['declaration'];
+        $declr_data['is_const'] = $data['is_const'];
+        $this->write_function_declr($writer, $id, $declr_data);
+	    $writer->endline()->indent();
+        foreach($data['locals'] as $d) {
+	        $writer->line('local ');
+	        $this->write_var_declr($writer, $d['id'] ,$d);
+	        $writer->endline();
+        }
+	    $this->write_statements($writer, $data['statements']);
+	    $writer->endblock('endfunction');
+    }
+
+	public function write_statements(JASSWriter $writer, $statements) {
+	    foreach($statements as $st) {
+		    $this->write_statement($writer, $st);
+	    }
+	}
+
+	public function write_statement(JASSWriter $writer, $statement) {
+		if ($statement['type'] == 'set') {
+			$this->write_set($writer, $statement);
+		} elseif ($statement['type'] == 'call') {
+			$writer->line('call ');
+			$this->write_call($writer, $statement);
+			$writer->endline();
+		} elseif ($statement['type'] == 'if') {
+			$this->write_if($writer, $statement);
+		} elseif ($statement['type'] == 'loop') {
+			$this->write_loop($writer, $statement);
+		} elseif ($statement['type'] == 'exitwhen') {
+			$this->write_exitwhen($writer, $statement);
+		} elseif ($statement['type'] == 'return') {
+			$this->write_return($writer, $statement);
+		} elseif ($statement['type'] == 'debug') {
+			$this->write_debug($writer, $statement);
+		} else {
+			throw new Exception("Unknown statement type ".$statement['type']);
+		}
+	}
+
+	public function write_set(JASSWriter $writer, $set) {
+		$writer->line('set '.$set['id']);
+		if ($set['index']) {
+			$writer->write('[');
+			$this->write_expression($writer, $set['index']);
+			$writer->write(']');
+		}
+		$writer->write('=');
+		$this->write_expression($writer, $set['value']);
+		$writer->endline();
+	}
+
+	public function write_if(JASSWriter $writer, $if) {
+		$writer->line('if ');
+		foreach($if['branches'] as $i=>$branch) {
+			if ($i) {
+				if ($branch['condition']) {
+					$writer->write('elseif ');
+				} else {
+					$writer->write('else ');
+				}
+			}
+			if ($branch['condition']) {
+				$this->write_expression($writer, $branch['condition']);
+			}
+			$writer->write(' then')->endline()->indent();
+			$this->write_statements($writer, $branch['statements']);
+			$writer->unindent();
+		}
+		$writer->line('endif')->endline();
+	}
+
+	public function write_loop(JASSWriter $writer, $loop) {
+		$writer->block('loop');
+		$this->write_statements($writer, $loop['statements']);
+		$writer->endblock('endloop');
+	}
+
+	public function write_return(JASSWriter $writer, $ret) {
+		$writer->line('return');
+		if ($ret['expr']) {
+			//^_^
+			$writer->write(' ');
+			$this->write_expression($writer, $ret['expr']);
+		}
+		$writer->endline();
+	}
+
+	public function write_exitwhen(JASSWriter $writer, $exitwhen) {
+		$writer->line('return ');
+		$this->write_expression($writer, $exitwhen['condition']);
+		$writer->endline();
+	}
+
+	public function write_debug(JASSWriter $writer, $debug) {
+		$writer->line('debug ');
+		//TODO:fix, will be on the next line!!
+		$this->write_statement($writer, $debug['sub']);
+		$writer->endline();
+	}
+	
+	public function write_var_declr(JASSWriter $writer, $id, $data) {
+		$writer->write($data['type']);
+		if ($data['is_array']) {
+			$writer->write(' array');
+		}
+		$writer->write(' '.$id);
+		if (isset($data['value'])) {
+			$writer->write('=');
+			$this->write_expression($writer, $data['value']);
+		}
+	}
+
+    public function write_function_declr(JASSWriter $writer, $id, $data) {
+        $s = '';
+        if ($data['is_const']) {
+            $s .= 'const ';
+        }
+        $writer->line($s.'function '.$id.' takes ');
+        if (!count($data['args'])) {
+            $writer->write('nothing ');
+        } else {
+            foreach($data['args'] as $id=>$type) {
+                $writer->write($type.' '.$id.' ');
+            }
+        }
+        $writer->write('returns '.($data['return']?$data['return']:'nothing'));
+    }
+
+    public function write_expression(JASSWriter $writer, $expr) {
+        if (isset($expr['type'])) {
+            switch($expr['type']) {
+                case 'decimal':
+                case 'octal':
+                case 'hex':
+                    $this->write_int($writer, $expr);
+                    break;
+                case 'real':
+                    $this->write_float($writer, $expr);
+                    break;
+                case 'null':
+                    $writer->write('null');
+                    break;
+                case 'bool':
+                    $this->write_boolean($writer, $expr);
+                    break;
+                case 'string':
+                    $this->write_string($writer, $expr);
+                    break;
+                case 'var':
+                case 'array_ref':
+                case 'function_ref':
+                    $this->write_id($writer, $expr);
+                    break;
+                case 'call':
+                    $this->write_call($writer, $expr);
+                    break;
+                default:
+                    throw new Exception("Unknown type ".$expr['type']);
+            }
+        } else {
+            foreach($expr as $v) {
+                if (is_array($v)) {
+                    $this->write_expression($writer, $v);
+                } else {
+                    //operator
+                    $writer->write($v);
+                }
+            }
+        }
+    }
+
+    public function write_int(JASSWriter $writer, $int) {
+        if ($int['type'] == 'octal') {
+            $int['value'] = decoct($int['value']);
+        } elseif ($int['type'] == 'hex') {
+            $int['value'] = '0x'.dechex($int['value']);
+        }
+        $writer->write($int['value']);
+    }
+
+    public function write_float(JASSWriter $writer, $float) {
+        $writer->write($float['value']);
+    }
+
+    public function write_boolean(JASSWriter $writer, $bool) {
+        $writer->write($bool['value']?'true':'false');
+    }
+
+    public function write_string(JASSWriter $writer, $str) {
+        $escaped_chars = array('\\', '"');
+        $replace = array('\\\\', '\\"');
+        $writer->write('"'.str_replace($escaped_chars, $replace, $str['value']).'"');
+    }
+
+    public function write_id(JASSWriter $writer, $id) {
+        if ($id['type'] == 'array_ref') {
+            $writer->write($id['id'].'[');
+            $this->write_expression($writer, $id['index']);
+            $writer->write(']');
+        } else {
+            $writer->write($id['id']);
+        }
+    }
+
+    public function write_call(JASSWriter $writer, $call) {
+        $writer->write($call['id'].'(');
+        foreach($call['args'] as $i=>$arg) {
+            if ($i) {
+                $writer->write(', ');
+            }
+            $this->write_expression($writer, $arg);
+        }
+        $writer->write(')');
+    }
 
 	public function parse(JASSLexer $lexer) {
 		$this->file($lexer);
@@ -219,7 +530,7 @@ class JASSParser {
 		while(!$lexer->next_is('endfunction')) {
 			$statements[] = $this->statement($lexer);
 		}
-		$this->functions[] = array(
+		$this->functions[$data['id']] = array(
 			'is_const' => $is_const,
 			'declaration' => $data,
 			'locals' => $locals,
@@ -470,7 +781,12 @@ class JASSParser {
 			);
 			return true;
 		} else {
-			return $this->var_declr($lexer);
+			$d = $this->var_declr($lexer);
+			if (!$d) {
+				return false;
+			}
+			$this->globals[$d['id']] = $d;
+			return true;
 		}
 	}
 
@@ -480,16 +796,17 @@ class JASSParser {
 		}
 		$is_array = $lexer->next_is('array');
 		$id = $this->id($lexer);
-		$this->globals[$id] = array(
+		$ret = array(
+			'id' => $id,
 			'type' => $type,
 			'is_array' => $is_array,
 		);
 		if (!$is_array) {
 			if ($lexer->next_is('=')) {
-				$this->globals[$id]['value'] = $this->expr($lexer);
+				$ret['value'] = $this->expr($lexer);
 			}
 		}
-		return true;
+		return $ret;
 	}
 
 	protected function expr(JASSLexer $lexer) {
@@ -621,9 +938,16 @@ class JASSParser {
 
 	protected function string_constant(JASSLexer $lexer) {
 		if (substr($lexer->peek(), 0, 1) == '"') {
+            $val = $lexer->next();
+            $val = substr($val, 1, strlen($val) - 2);
+            $val = preg_replace('#\\\\(.)#', '$1', $val);
+            if (isset($this->params['string_const_cb'])) {
+                $cb = $this->params['string_const_cb'];
+                call_user_func($cb, $val);
+            }
 			return array(
 				'type' => 'string',
-				'value' => $lexer->next(),
+				'value' => $val,
 			);
 		}
 		return false;

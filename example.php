@@ -5,16 +5,23 @@ include 'jass.php';
 $file = $argv[1];
 echo "Processing file $file\n";
 
-$parser = new JASSParser(array('call_cb' => 'call_cb'));
+$parser = new JASSParser(array('call_cb' => 'call_cb'/*, 'string_const_cb' => 'string_const_cb'*/));
 $lexer = new JASSLexer(file_get_contents($file));
 
 $start_locs = array();
 $players_locs = array();
 
 $parser->parse($lexer);
+echo "Saving\n";
+
+$parser->save('saved.j', array('indent' => false));
 
 foreach($players_locs as $player=>$loc_id) {
 	echo 'Player '.$player.' starts at '.$start_locs[$loc_id][0].':'.$start_locs[$loc_id][1]."\n";
+}
+
+function string_const_cb($str) {
+    echo $str."\n";
 }
 
 function call_cb($function, $arguments) {
