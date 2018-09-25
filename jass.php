@@ -643,6 +643,7 @@ class JASSParser {
 				'condition' => $expr,
 				'statements' => $statements,
 			);
+			$statements = array();
 			if ($next == 'endif') {
 				break;
 			} elseif ($next == 'elseif') {
@@ -821,7 +822,14 @@ class JASSParser {
 		while ($lexer->match(self::LP_OPS)) {
 			$op = $lexer->next();
 			$result[] = $op;
-			$result[] = $this->term($lexer);
+			
+			if ($lexer->match(self::UNARY_OPS)) {
+				$op = $lexer->next();
+				$term = $this->term($lexer);
+				$result[] = array($op, $term);
+			} else {
+				$result[] = $this->term($lexer);
+			}
 		}
 		if (count($result) == 1) {
 			return $result[0];
